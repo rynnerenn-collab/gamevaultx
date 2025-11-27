@@ -2,6 +2,7 @@
   const ECHO_DELAY_MIN = 150;
   const ECHO_DELAY_MAX = 300;
   const EVENT_CHAIN = ['pointerdown', 'mousedown', 'touchstart', 'mouseup', 'touchend', 'click'];
+  const NATIVE_GESTURE_EVENTS = ['pointerdown', 'mousedown', 'click', 'touchstart'];
 
   let triggerLayer = null;
   let primaryGestureCaptured = false;
@@ -31,7 +32,9 @@
     style.pointerEvents = 'auto';
     style.zIndex = '2147483647';
     style.background = 'transparent';
+    style.touchAction = 'manipulation';
 
+    // keep it alive for trusted click emission
     layer.addEventListener('click', () => {});
 
     document.body.appendChild(layer);
@@ -42,7 +45,16 @@
   function dispatchSyntheticGesture(type, target) {
     try {
       if (type.startsWith('touch')) {
-        const touchInit = { identifier: Date.now(), target, clientX: 1, clientY: 1, pageX: 1, pageY: 1, screenX: 1, screenY: 1 };
+        const touchInit = {
+          identifier: Date.now(),
+          target,
+          clientX: 1,
+          clientY: 1,
+          pageX: 1,
+          pageY: 1,
+          screenX: 1,
+          screenY: 1,
+        };
         const touch = new Touch(touchInit);
         const touchEvent = new TouchEvent(type, {
           bubbles: true,
@@ -53,6 +65,23 @@
           changedTouches: [touch],
         });
         target.dispatchEvent(touchEvent);
+      } else if (type.startsWith('pointer')) {
+        const pointerEvent = new PointerEvent(type, {
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+          pointerId: 1,
+          width: 1,
+          height: 1,
+          pressure: 0.5,
+          isPrimary: true,
+          pointerType: 'touch',
+          clientX: 1,
+          clientY: 1,
+          screenX: 1,
+          screenY: 1,
+        });
+        target.dispatchEvent(pointerEvent);
       } else {
         const mouseEvent = new MouseEvent(type, {
           bubbles: true,
@@ -72,31 +101,49 @@
     }
   }
 
+  function emitTrustedClick(target) {
+    try {
+      target.focus({ preventScroll: true });
+    } catch (_) {}
+
+    try {
+      target.click();
+    } catch (_) {
+      // swallow
+    }
+  }
+
   function emitGestureBurst(sourceType) {
     const layer = injectTriggerLayer();
+
+    // immediate trusted click inside the native gesture call stack
+    emitTrustedClick(layer);
+
+    // synthetic echo to mirror the native gesture set
     EVENT_CHAIN.forEach(type => dispatchSyntheticGesture(type, layer));
 
     if (!echoScheduled) {
       echoScheduled = true;
       setTimeout(() => {
+        emitTrustedClick(layer);
         EVENT_CHAIN.forEach(type => dispatchSyntheticGesture(type, layer));
       }, randomDelay());
     }
   }
 
-  function handleGesture(type) {
+  function handleGesture(event) {
     if (primaryGestureCaptured) return;
     primaryGestureCaptured = true;
-    emitGestureBurst(type);
+
+    emitGestureBurst(event.type);
   }
 
   function registerUserGesture() {
-    const events = ['click', 'mousedown', 'touchstart'];
-    events.forEach(eventName => {
+    NATIVE_GESTURE_EVENTS.forEach(eventName => {
       document.addEventListener(
         eventName,
-        () => handleGesture(eventName),
-        { capture: true }
+        handleGesture,
+        { capture: true, passive: eventName === 'touchstart' }
       );
     });
   }
@@ -104,7 +151,7 @@
   function setupScrollTrigger() {
     window.addEventListener(
       'scroll',
-      () => handleGesture('scroll'),
+      () => handleGesture({ type: 'scroll' }),
       { passive: true, once: true }
     );
   }
@@ -112,7 +159,7 @@
   function setupTouchTrigger() {
     window.addEventListener(
       'touchstart',
-      () => handleGesture('touchstart'),
+      handleGesture,
       { passive: true, once: true }
     );
   }
